@@ -1,0 +1,111 @@
+--- main-snapshot/WhoopFrame.swift	2026-10-09 15:11:37
++++ Sources/WhoopFrame.swift	2026-10-09 15:12:21
+@@ -32,6 +32,16 @@
+     var oneShotSucceeded: Bool { result == 1 && revision == 1 && detail == 5 }
+ }
+ 
++// Burst rule for alerts. Messages often arrive several at once; one buzz
++// covers every alert that lands while it runs or within the quiet time after.
++enum BuzzGate {
++    static func allows(now: Date, lastBuzz: Date?, quietSeconds: Int, busy: Bool) -> Bool {
++        if busy { return false }
++        guard let lastBuzz else { return true }
++        return now.timeIntervalSince(lastBuzz) >= Double(quietSeconds)
++    }
++}
++
+ enum WhoopFrame {
+     static func crc16(_ bytes: [UInt8]) -> UInt16 {
+         var value: UInt16 = 0xffff
+--- main-snapshot/WhoopBluetooth.swift	2026-10-09 15:11:37
++++ Sources/WhoopBluetooth.swift	2026-10-09 15:12:21
+@@ -8,6 +8,8 @@
+     static let shared = WhoopBluetooth()
+     private static let savedBandKey = "whoop.savedPeripheral"
+     private static let logKey = "whoop.researchLog"
++    private static let quietKey = "whoop.quietSeconds"
++    static let quietChoices = [5, 10, 30, 60, 120]
+     private static let service = CBUUID(string: "fd4b0001-cce1-4033-93ce-002d5875f58a")
+     private static let writeID = CBUUID(string: "fd4b0002-cce1-4033-93ce-002d5875f58a")
+     private static let replyID = CBUUID(string: "fd4b0003-cce1-4033-93ce-002d5875f58a")
+@@ -20,6 +22,13 @@
+     @Published private(set) var isReady = false
+     @Published private(set) var isBusy = false
+     @Published private(set) var isRunningShortcut = false
++    // Seconds after a buzz during which further alerts do not buzz again.
++    @Published var quietSeconds: Int = {
++        let saved = UserDefaults.standard.integer(forKey: WhoopBluetooth.quietKey)
++        return saved > 0 ? saved : 10
++    }() {
++        didSet { UserDefaults.standard.set(quietSeconds, forKey: Self.quietKey) }
++    }
+ 
+     private var central: CBCentralManager!
+     private var peripheral: CBPeripheral?
+@@ -33,6 +42,8 @@
+     private var buzzGeneration = UUID()
+     private var sessionGeneration = UUID()
+     private var lastBuzzReply: WhoopHapticReply?
++    private var lastShortcutBuzz: Date?
++    private var joinedAlerts = 0
+ 
+     override init() {
+         super.init()
+@@ -138,9 +149,18 @@
+     // background scanning; the intent awaits replies instead of returning
+     // immediately after scheduling a Bluetooth write.
+     func buzzFromShortcut() async throws {
+-        guard !isRunningShortcut && !isBusy else {
+-            throw ShortcutFailure(message: "WHOOP is already running a vibration test.")
++        // Extra alerts in a burst succeed without buzzing, so the automation
++        // neither fails nor buzzes once per message.
++        guard BuzzGate.allows(now: Date(), lastBuzz: lastShortcutBuzz, quietSeconds: quietSeconds,
++                              busy: isRunningShortcut || isBusy) else {
++            joinedAlerts += 1
++            if joinedAlerts == 1 { note("More alerts arrived; no extra buzz during the quiet time.") }
++            return
+         }
++        if joinedAlerts > 0 {
++            note("\(joinedAlerts) alert\(joinedAlerts == 1 ? "" : "s") skipped during the last quiet time.")
++            joinedAlerts = 0
++        }
+         isRunningShortcut = true
+         defer { isRunningShortcut = false }
+         let deadline = ContinuousClock().now.advanced(by: .seconds(20))
+@@ -169,6 +189,7 @@
+                 }
+             }
+             try Task.checkCancellation()
++            let started = Date()
+             buzz()
+             while isBusy {
+                 guard isReady && isConnected else {
+@@ -185,6 +206,9 @@
+             guard lastBuzzReply?.oneShotSucceeded == true else {
+                 throw ShortcutFailure(message: "WHOOP did not confirm the buzz command. Check the research log.")
+             }
++            // The quiet time starts only after a buzz the band confirmed, so
++            // a failed attempt does not mute the alerts that follow it.
++            lastShortcutBuzz = started
+             note("Shortcuts one-buzz reply confirmed.")
+         } catch {
+             // A rejected stop disables readiness. Do not automatically repeat
+--- main-snapshot/WhoopBuzzApp.swift	2026-10-09 15:11:37
++++ Sources/WhoopBuzzApp.swift	2026-10-09 15:12:21
+@@ -36,8 +36,15 @@
+                             .font(.footnote).foregroundStyle(.secondary)
+                     }
+                     Section("Notification bridge") {
+-                        Text("Connect your band here once. In Shortcuts, use the Buzz WHOOP action for your automation. Notification-trigger and locked-phone operation still need testing.")
++                        Text("Connect your band here once. In Shortcuts, use the Buzz WHOOP action for your automation.")
+                             .font(.footnote)
++                        Picker("Quiet time after a buzz", selection: $band.quietSeconds) {
++                            ForEach(WhoopBluetooth.quietChoices, id: \.self) { seconds in
++                                Text(seconds < 60 ? "\(seconds) seconds" : "\(seconds / 60) min").tag(seconds)
++                            }
++                        }
++                        Text("When several alerts arrive together, the band buzzes once. Alerts within this time of a buzz do not buzz again.")
++                            .font(.footnote).foregroundStyle(.secondary)
+                     }
+                     Section("Research log") {
+                         ForEach(Array(band.log.enumerated()), id: \.offset) { _, line in

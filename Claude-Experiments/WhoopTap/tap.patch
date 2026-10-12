@@ -1,0 +1,186 @@
+--- ../WhoopQuiet/Sources/WhoopFrame.swift	2026-10-09 15:12:21
++++ Sources/WhoopFrame.swift	2026-10-09 16:01:39
+@@ -32,6 +32,33 @@
+     var oneShotSucceeded: Bool { result == 1 && revision == 1 && detail == 5 }
+ }
+ 
++// Band events arrive unprompted as type-48 frames on the data channel.
++// Layout from the Goose reference, checked against events in this owner's
++// captures: inner = [48, sequence, event ID u16, seconds u32, subseconds u16,
++// two more bytes, data…], little endian.
++struct WhoopEvent {
++    static let doubleTap: UInt16 = 14
++    private static let names: [UInt16: String] = [
++        3: "BATTERY_LEVEL", 7: "CHARGING_ON", 8: "CHARGING_OFF", 9: "WRIST_ON", 10: "WRIST_OFF",
++        11: "BLE_CONNECTION_UP", 12: "BLE_CONNECTION_DOWN", 14: "DOUBLE_TAP", 29: "STRAP_CONDITION_REPORT",
++        33: "BLE_REALTIME_HR_ON", 34: "BLE_REALTIME_HR_OFF", 60: "HAPTICS_FIRED",
++        100: "HAPTICS_TERMINATED", 123: "GENERIC_FIRMWARE_EVENT",
++    ]
++
++    let id: UInt16
++    let data: [UInt8]
++
++    init?(frame: [UInt8]) {
++        guard WhoopFrame.valid(frame) else { return nil }
++        let inner = Array(frame[8..<(frame.count - 4)])
++        guard inner.count >= 4, inner[0] == 48 else { return nil }
++        id = UInt16(inner[2]) | UInt16(inner[3]) << 8
++        data = inner.count > 12 ? Array(inner[12...]) : []
++    }
++
++    var name: String { Self.names[id] ?? "event \(id)" }
++}
++
+ // Burst rule for alerts. Messages often arrive several at once; one buzz
+ // covers every alert that lands while it runs or within the quiet time after.
+ enum BuzzGate {
+--- ../WhoopQuiet/Sources/WhoopBluetooth.swift	2026-10-09 15:12:21
++++ Sources/WhoopBluetooth.swift	2026-10-09 16:01:39
+@@ -9,6 +9,8 @@
+     private static let savedBandKey = "whoop.savedPeripheral"
+     private static let logKey = "whoop.researchLog"
+     private static let quietKey = "whoop.quietSeconds"
++    private static let tapKey = "whoop.listenForTaps"
++    private static let dataID = CBUUID(string: "fd4b0005-cce1-4033-93ce-002d5875f58a")
+     static let quietChoices = [5, 10, 30, 60, 120]
+     private static let service = CBUUID(string: "fd4b0001-cce1-4033-93ce-002d5875f58a")
+     private static let writeID = CBUUID(string: "fd4b0002-cce1-4033-93ce-002d5875f58a")
+@@ -23,6 +25,13 @@
+     @Published private(set) var isBusy = false
+     @Published private(set) var isRunningShortcut = false
+     // Seconds after a buzz during which further alerts do not buzz again.
++    // Experiment: watch the band's event stream for a double tap.
++    @Published var listensForTaps = UserDefaults.standard.bool(forKey: WhoopBluetooth.tapKey) {
++        didSet {
++            UserDefaults.standard.set(listensForTaps, forKey: Self.tapKey)
++            applyTapListening()
++        }
++    }
+     @Published var quietSeconds: Int = {
+         let saved = UserDefaults.standard.integer(forKey: WhoopBluetooth.quietKey)
+         return saved > 0 ? saved : 10
+@@ -43,6 +52,9 @@
+     private var sessionGeneration = UUID()
+     private var lastBuzzReply: WhoopHapticReply?
+     private var lastShortcutBuzz: Date?
++    private var dataChannel: CBCharacteristic?
++    private var dataFrames = WhoopReplies()
++    private var lastTapReply: Date?
+     private var joinedAlerts = 0
+ 
+     override init() {
+@@ -54,8 +66,45 @@
+     private func note(_ text: String) {
+         status = text
+         log.insert(Date().formatted(date: .omitted, time: .standard) + "  " + text, at: 0)
+-        if log.count > 40 { log.removeLast(log.count - 40) }
++        if log.count > 120 { log.removeLast(log.count - 120) }
+         UserDefaults.standard.set(log, forKey: Self.logKey)
++    }
++
++    // Log line that leaves the status text alone.
++    private func logOnly(_ text: String) {
++        let current = status
++        note(text)
++        status = current
++    }
++
++    // The data channel carries the band's events. It also carries stored
++    // data whenever the WHOOP app syncs, so listening wakes this app more.
++    private func applyTapListening() {
++        guard let peripheral, let dataChannel, isConnected,
++              dataChannel.properties.contains(.notify),
++              dataChannel.isNotifying != listensForTaps else { return }
++        peripheral.setNotifyValue(listensForTaps, for: dataChannel)
++    }
++
++    private func handleBandData(_ data: Data) {
++        for frame in dataFrames.feed(data) {
++            guard let event = WhoopEvent(frame: frame) else { continue }
++            let detail = event.data.prefix(8).map { String(format: "%02x", $0) }.joined(separator: " ")
++            logOnly("Band event \(event.name)" + (detail.isEmpty ? "." : " [\(detail)]."))
++            if event.id == WhoopEvent.doubleTap { replyToTap() }
++        }
++    }
++
++    // First step towards telling the time: one buzz back proves the round trip.
++    private func replyToTap() {
++        let recent = lastTapReply.map { Date().timeIntervalSince($0) < 3 } ?? false
++        guard isReady, !isBusy, !isRunningShortcut, !recent else {
++            logOnly("Double tap seen; no reply buzz because the band was busy.")
++            return
++        }
++        lastTapReply = Date()
++        logOnly("Double tap seen; buzzing back.")
++        buzz()
+     }
+ 
+     func scan() {
+@@ -105,6 +154,8 @@
+         peripheral = nil
+         writer = nil
+         replies = WhoopReplies()
++        dataChannel = nil
++        dataFrames = WhoopReplies()
+         pending.removeAll()
+         writeQueue.removeAll()
+         writing = nil
+@@ -318,7 +369,7 @@
+         guard device == peripheral else { return }
+         guard error == nil, let service = device.services?.first(where: { $0.uuid == Self.service })
+         else { note("WHOOP 5 service was not available on this connection."); return }
+-        device.discoverCharacteristics([Self.writeID, Self.replyID], for: service)
++        device.discoverCharacteristics([Self.writeID, Self.replyID, Self.dataID], for: service)
+     }
+ 
+     func peripheral(_ device: CBPeripheral, didDiscoverCharacteristicsFor service: CBService, error: Error?) {
+@@ -328,10 +379,16 @@
+               let reply = chars.first(where: { $0.uuid == Self.replyID }), reply.properties.contains(.notify)
+         else { note("The band's command channel was not available."); return }
+         writer = write
++        dataChannel = chars.first(where: { $0.uuid == Self.dataID })
+         device.setNotifyValue(true, for: reply)
+     }
+ 
+     func peripheral(_ device: CBPeripheral, didUpdateNotificationStateFor characteristic: CBCharacteristic, error: Error?) {
++        if device == peripheral, characteristic.uuid == Self.dataID {
++            logOnly(error != nil ? "Could not listen for taps: \(error!.localizedDescription)"
++                    : characteristic.isNotifying ? "Listening for taps on the band." : "Stopped listening for taps.")
++            return
++        }
+         guard device == peripheral, characteristic.uuid == Self.replyID else { return }
+         guard error == nil, characteristic.isNotifying else { note("Could not receive band replies."); return }
+         enqueue(.hello, sequence: 1)
+@@ -352,6 +409,10 @@
+     }
+ 
+     func peripheral(_ device: CBPeripheral, didUpdateValueFor characteristic: CBCharacteristic, error: Error?) {
++        if device == peripheral, characteristic.uuid == Self.dataID {
++            if error == nil, let data = characteristic.value { handleBandData(data) }
++            return
++        }
+         guard device == peripheral, characteristic.uuid == Self.replyID,
+               error == nil, let data = characteristic.value else { return }
+         for frame in replies.feed(data) {
+@@ -364,6 +425,7 @@
+             if command == .hello {
+                 isReady = result == 1
+                 if isReady { UserDefaults.standard.set(device.identifier.uuidString, forKey: Self.savedBandKey) }
++                if isReady { applyTapListening() }
+                 let body = Array(inner.dropFirst(5))
+                 if isReady, body.count >= 98 {
+                     let version = "\(body[91]).\(body[92]).\(body[93]).\(UInt32(body[94]) | UInt32(body[95]) << 8 | UInt32(body[96]) << 16 | UInt32(body[97]) << 24)"
+--- ../WhoopQuiet/Sources/WhoopBuzzApp.swift	2026-10-09 15:12:21
++++ Sources/WhoopBuzzApp.swift	2026-10-09 16:01:39
+@@ -46,6 +46,11 @@
+                         Text("When several alerts arrive together, the band buzzes once. Alerts within this time of a buzz do not buzz again.")
+                             .font(.footnote).foregroundStyle(.secondary)
+                     }
++                    Section("Tap on the band (experiment)") {
++                        Toggle("Listen for double taps", isOn: $band.listensForTaps)
++                        Text("When on, a double tap on the band should buzz back once, and every event the band reports is logged below. Listening wakes this app more often, so it uses more battery.")
++                            .font(.footnote).foregroundStyle(.secondary)
++                    }
+                     Section("Research log") {
+                         ForEach(Array(band.log.enumerated()), id: \.offset) { _, line in
+                             Text(line).font(.caption).textSelection(.enabled)

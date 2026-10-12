@@ -1,0 +1,7 @@
+{
+  "url": "https://support.apple.com/guide/shortcuts/event-triggers-apd932ff833f/ios",
+  "file": "apple-shortcuts-event-triggers-2026-10-09.html",
+  "retrieved_date": "2026-10-09",
+  "sha256": "479ed09b5b86b7ee0c5dac387c638e031413bcce5acebd30d5e05d6422e7ab2b",
+  "finding": "Apple live page documents a Notification automation trigger with App and title/subtitle/message filters. Web search cached regional rendering may show older iOS 26 guide; live page contains newer text. Availability and firing on owner iPhone remain untested."
+}

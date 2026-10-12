@@ -1,0 +1,53 @@
+Device OS symbols: ~/Library/Developer/Xcode/iOS DeviceSupport/iPhone15,4 27.0 (24A437)
+WorkflowKit sha256: a3534e868001bd99815fa742080707d0e05cad736479a83700a22c620375b93a
+
+== Automation trigger classes in this build
+WFAirplaneModeTrigger WFAlarmTrigger WFAppInBackgroundTrigger WFAppInFocusTrigger WFArriveLocationTrigger WFBatteryLevelTrigger WFBluetoothTrigger WFCarPlayConnectionTrigger WFConfiguredTrigger WFCoreDataTrigger WFCoreDataUnifiedTrigger WFDNDTrigger WFEmailTrigger WFExternalDisplayTrigger WFKeyboardTrigger WFLeaveLocationTrigger WFLocationTrigger WFLowPowerModeTrigger WFMessageTrigger WFMultiTaskingArrangementTrigger WFNFCTrigger WFNotificationTrigger WFPlugInTrigger WFPredictedLocationTransitionTrigger WFScreenshotTrigger WFSleepTrigger WFSoundRecognitionTrigger WFStageManagerTrigger WFTimeOfDayTrigger WFTrigger WFUserFocusActivityTrigger WFWalletTransactionTrigger WFWifiTrigger WFWorkoutTrigger 
+
+== WFNotificationTrigger methods
++[WFNotificationTrigger displayGlyphName]
++[WFNotificationTrigger displayGlyphTintColor]
++[WFNotificationTrigger isAllowedToRunAutomatically]
++[WFNotificationTrigger localizedDisplayExplanation]
++[WFNotificationTrigger localizedDisplayNameWithContext:]
++[WFNotificationTrigger shortcutInputContentItemClass]
++[WFNotificationTrigger supportsSecureCoding]
++[WFNotificationTrigger triggerBacking]
++[WFNotificationTrigger(ContentInput) contentCollectionWithEventInfo:completion:]
++[WFNotificationTrigger(ContentInput) eventInfoForEvent:completion:]
++[WFNotificationTrigger(ContentInput) requiresEventInfoAsInput]
+-[WFNotificationTrigger .cxx_destruct]
+-[WFNotificationTrigger copyWithZone:]
+-[WFNotificationTrigger encodeWithCoder:]
+-[WFNotificationTrigger hasValidConfiguration]
+-[WFNotificationTrigger initWithCoder:]
+-[WFNotificationTrigger init]
+-[WFNotificationTrigger localizedDescriptionWithConfigurationSummary]
+-[WFNotificationTrigger localizedPastTenseDescription]
+-[WFNotificationTrigger selectedBundleIdentifiers]
+-[WFNotificationTrigger setSelectedBundleIdentifiers:]
+-[WFNotificationTrigger suggestedActions]
+
+== Gates (return value = the #0x… constant)
++[WFNotificationTrigger isAllowedToRunAutomatically]
+00000001d35ecb3c	mov	w0, #0x1
+00000001d35ecb40	ret
++[WFTrigger isAllowedToRunAutomatically]
+00000001d3510a9c	mov	w0, #0x0
+00000001d3510aa0	ret
++[WFTrigger isSupportedOnThisDevice]
+00000001d3510ab4	mov	w0, #0x1
+00000001d3510ab8	ret
+WFNotificationTrigger overrides isSupportedOnThisDevice: 0  (0 = inherits WFTrigger's value)
+
+== Reasons the OS logs for not firing
+%s Failed to hydrate UserNotificationEntity: %@
+%s UserNotificationEntity hydration returned empty output for %@:%@
+Notification trigger not firing due to failed Spotlight content hydration
+Notification trigger not firing due to missing or invalid value
+Notification trigger not firing due to not matching app bundle identifier filter
+Notification trigger not firing: no app configured
+
+== Feature flag named beside the trigger definition
+When a notification is received
+new_system_automations

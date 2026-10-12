@@ -1,0 +1,130 @@
+{
+  "platform": "iPhone only; Mac needed for building/installing prototype, not for Bluetooth operation.",
+  "project": "<project>/WhoopBuzz/WhoopBuzz.xcodeproj",
+  "prototype": "WHOOP 5 manual buzz and iOS 27 Shortcuts action research",
+  "device_status": "Installed on the owner iPhone 15 running iOS 27.0. Owner confirmed Test one buzz physically vibrates WHOOP 5.",
+  "firmware_observation": {
+    "candidate_version": "50.42.1.0",
+    "evidence_capture": "whoop-reconnect-01.pklg",
+    "reference_offset_in_hello_response_body": 91
+  },
+  "checks_passed": [
+    "Unsigned iPhoneOS SDK 27 build",
+    "Exact revision-3 hello framing parity with owner capture",
+    "Captured reply reassembly at every split point",
+    "CRC corruption rejection and resynchronization",
+    "Independent Python/zlib checksum check of hello, buzz and stop frames",
+    "Signed iPhone build with development provisioning profile",
+    "devicectl installation succeeded",
+    "devicectl foreground launch succeeded",
+    "Owner confirmed physical vibration from the iPhone Test one buzz button",
+    "iOS 27 App Intent extraction and App Shortcuts metadata registration",
+    "Free-team signed build with bluetooth-central background mode",
+    "Updated Shortcuts app installation and launch",
+    "Stop-failure fix signed SDK27 build",
+    "One-shot final reply semantic checks",
+    "Stop-failure fix installation and relaunch"
+  ],
+  "notification_bridge_status": "Owner created shortcut and automation. App Intent reached WHOOP and physically buzzed once on old build, but cleanup failed. Fix is built, installed, and launched. Updated Shortcut repetition and real locked-phone WhatsApp notification delivery remain unverified.",
+  "notification_api_constraints": {
+    "ordinary_notifications": "UNUserNotificationCenter handles the app own notifications.",
+    "accessory_notifications": "New iOS Accessory Notifications framework requires companion extensions and secure accessory transport; WHOOP compatibility remains unverified.",
+    "development_region": "Apple permits framework development/testing in any region; customer use is EU-limited."
+  },
+  "api_sources": [
+    "https://developer.apple.com/documentation/accessorynotifications",
+    "https://developer.apple.com/documentation/accessorytransportextension/receiving-ios-notifications-on-an-accessory",
+    "https://developer.apple.com/documentation/accessorytransportextension/accessorytransportsecurity"
+  ],
+  "commands_sent_by_prototype": [
+    145,
+    19,
+    122
+  ],
+  "haptics_reference": "https://raw.githubusercontent.com/ryanbr/noop/8e94d559be273ec8d74832fe5db78898be83cc11/docs/PROTOCOL_ALARMS.md",
+  "installation": {
+    "bundle_identifier": "dev.yajat.WhoopBuzzResearch",
+    "profile_expiration_utc": "2026-10-15T23:23:59+00:00",
+    "installed_at_utc": "2026-10-08T23:30:58.988821+00:00",
+    "physical_buzz_confirmed": true
+  },
+  "physical_validation": {
+    "test": "Foreground Test one buzz button",
+    "owner_report": "tested one buzz , it works",
+    "recorded_at_utc": "2026-10-08T23:31:25.039195+00:00",
+    "limits": [
+      "Single user-reported foreground test.",
+      "No background, locked-phone, reconnect, notification forwarding, or stop completion observation reported."
+    ]
+  },
+  "notification_signing_probe": {
+    "project": "WhoopBuzz/NotificationProbe/NotificationProbe.xcodeproj",
+    "purpose": "Check availability of required Accessory Transport Extension signing capability without changing or installing the buzz app.",
+    "unsigned_sdk27_build": "passed",
+    "signed_build": "failed",
+    "xcode_error": "Personal development teams do not support the Accessory Transport Extension capability.",
+    "evidence_log": "WhoopBuzz/NotificationProbe/signing-build.log",
+    "owner_account_reply": "Only the current free account",
+    "installed": false,
+    "limits": "This is a signing result. It does not prove whether WHOOP firmware supports ANCS or Apple secure notification forwarding."
+  },
+  "ancs_owner_settings_check": {
+    "location": "iPhone Settings > Bluetooth > WHOOP device info",
+    "owner_report": "No Share System Notification",
+    "share_system_notifications_switch_present": false,
+    "interpretation": "No visible notification-sharing control; no demonstrated ANCS route. This alone does not prove firmware-level ANCS support is impossible."
+  },
+  "shortcuts_route": {
+    "action": "Buzz WHOOP",
+    "source": "Sources/BuzzWhoopIntent.swift",
+    "minimum_ios": "27.0",
+    "official_trigger_source": "https://support.apple.com/guide/shortcuts/event-triggers-apd932ff833f/ios",
+    "evidence_manifest": "../references/apple-shortcuts-event-triggers-source.json",
+    "signed_sdk27_build": "passed",
+    "action_metadata": "Extracted action is discoverable, background mode, main-process target, no unlock authentication policy, and no required accessory extension capabilities.",
+    "installation": "succeeded",
+    "foreground_launch": "succeeded",
+    "updated_at_utc": "2026-10-08T23:50:53.876931+00:00",
+    "setup": "Connect the band once in the updated app to save its peripheral ID, then run Buzz WHOOP in Shortcuts.",
+    "execution": "Shared manager reconnects saved peripheral; confirmed bounded one-shot reply (result 1/revision 1/detail 5) completes after two-second cooldown without extra stop; unconfirmed requests retain stop fallback. Terminal failures clear busy and failed stops are not automatically retried.",
+    "background_modes": [
+      "bluetooth-central"
+    ],
+    "hardware_validation": "Old build: one Shortcuts invocation reached WHOOP, returned buzz result 1/detail 5, and owner confirmed a brief vibration followed by natural stop. Extra stop then failed and left busy set. A later test lost Bluetooth and produced no vibration. Updated fix is installed; new action and locked-phone notification tests pending.",
+    "baseline_source_backup": "ManualBuzzBaseline",
+    "build_log": "shortcuts-build.log",
+    "install_result": "shortcuts-install-result.json",
+    "launch_result": "shortcuts-launch-result.json",
+    "notification_trigger_available_on_owner_iphone": true,
+    "owner_trigger_report": "Yes, Notification is available",
+    "owner_shortcut_actions": "Only Buzz WHOOP; no Set/Toggle Bluetooth actions."
+  },
+  "stop_failure_fix": {
+    "recorded_at_utc": "2026-10-09T00:07:24.279461+00:00",
+    "owner_reports": [
+      "Buzzed briefly, then stopped",
+      "WHOOP is already running a vibration test",
+      "Fresh retry: no vibration; WHOOP did not confirm buzz command"
+    ],
+    "evidence": [
+      "Diagnostics/stop-failure-preferences.plist",
+      "Diagnostics/fresh-test-preferences.plist",
+      "Diagnostics/post-fix-startup-preferences.plist"
+    ],
+    "observed_order": [
+      "10:52:57: command-19 pending then final success, detail 5",
+      "10:52:59: automatic stop pending",
+      "10:53:00: stop failure 0; app disabled readiness and kept busy",
+      "11:00:23: Bluetooth became unavailable during fresh Shortcut attempt; no buzz reply",
+      "11:05:31: new app process started; Bluetooth powered off",
+      "11:05:39: Bluetooth ready"
+    ],
+    "cause_confirmed": "Unnecessary stop after successful finite buzz caused app-level failure; terminal stop failure left busy set. Fresh missing-buzz error followed Bluetooth state loss.",
+    "remaining_unknown": "Exact old-build Bluetooth state loss reason; new diagnostic logging records individual manager state. The owner shortcut has no Bluetooth toggle actions.",
+    "build": "passed",
+    "protocol_checks": "passed: original frame parity/fragment/CRC checks plus one-shot reply semantic validation",
+    "install": "succeeded",
+    "launch": "succeeded",
+    "next_test": "Reconnect in WHOOP Buzz, run the existing Buzz WHOOP shortcut twice several seconds apart, then test real incoming WhatsApp Business notification with phone locked."
+  }
+}

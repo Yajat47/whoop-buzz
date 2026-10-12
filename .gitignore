@@ -1,0 +1,20 @@
+# Build output (regenerate with xcodebuild)
+Build/
+build/
+ShortcutsBuild/
+DerivedData/
+__pycache__/
+*.pyc
+
+# Xcode per-user state
+xcuserdata/
+*.xcuserstate
+
+# Third-party installer downloaded for the SideStore setup
+Claude-Experiments/sidestore/iloader.app/
+*.dmg
+
+.DS_Store
+
+# Log written by Claude-Experiments/sidestore/make-ipa.sh
+make-ipa-build.log

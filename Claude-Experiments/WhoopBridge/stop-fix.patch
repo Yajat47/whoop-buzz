@@ -1,0 +1,178 @@
+--- codex-snapshot/WhoopBluetooth.swift	2026-10-09 10:54:09
++++ Sources/WhoopBluetooth.swift	2026-10-09 10:55:56
+@@ -33,6 +33,9 @@
+     private var buzzGeneration = UUID()
+     private var sessionGeneration = UUID()
+     private var lastBuzzResult: UInt8?
++    private var lastConfirmedBuzz: Date?
++    private var isSettingUp = false
++    private var closing: (device: CBPeripheral, at: Date)?
+ 
+     override init() {
+         super.init()
+@@ -69,6 +72,7 @@
+         peripheral = device
+         device.delegate = self
+         isConnecting = true
++        isSettingUp = true
+         note("Connecting to your WHOOP…")
+         central.connect(device)
+         let generation = sessionGeneration
+@@ -81,7 +85,10 @@
+ 
+     func disconnect() {
+         central.stopScan()
+-        if let peripheral { central.cancelPeripheralConnection(peripheral) }
++        if let peripheral {
++            if isConnected || isConnecting { closing = (peripheral, Date()) }
++            central.cancelPeripheralConnection(peripheral)
++        }
+         clearSession()
+         note("Disconnected.")
+     }
+@@ -101,6 +108,7 @@
+         isConnected = false
+         isReady = false
+         isBusy = false
++        isSettingUp = false
+         lastBuzzResult = nil
+     }
+ 
+@@ -108,13 +116,12 @@
+         guard isReady && !isBusy else { return }
+         lastBuzzResult = nil
+         isBusy = true
+-        let generation = UUID()
+-        buzzGeneration = generation
++        buzzGeneration = UUID()
++        // No automatic stop. The single-notification pattern ends by itself:
++        // on 9 Oct the band's final buzz reply (result 1, detail 5) arrived
++        // within a second, and the stop sent two seconds later was refused
++        // (result 0), which locked the session until reconnecting.
+         enqueue(.buzz)
+-        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
+-            guard let self, self.buzzGeneration == generation, self.isConnected else { return }
+-            self.stop()
+-        }
+     }
+ 
+     func stop() {
+@@ -128,8 +135,12 @@
+     // background scanning; the intent awaits replies instead of returning
+     // immediately after scheduling a Bluetooth write.
+     func buzzFromShortcut() async throws {
+-        guard !isRunningShortcut && !isBusy else {
+-            throw ShortcutFailure(message: "WHOOP is already running a vibration test.")
++        // Alerts often arrive in bursts. One buzz covers those that land
++        // while it runs or within three seconds after it.
++        let recent = lastConfirmedBuzz.map { Date().timeIntervalSince($0) < 3 } ?? false
++        guard !isRunningShortcut && !isBusy && !recent else {
++            note("Shortcuts request joined the current buzz.")
++            return
+         }
+         isRunningShortcut = true
+         defer { isRunningShortcut = false }
+@@ -143,6 +154,12 @@
+                 throw ShortcutFailure(message: "Turn on Bluetooth and allow WHOOP Buzz to use it.")
+             }
+             if !isReady {
++                // Connected but unusable after an earlier fault: start again.
++                if isConnected && !isSettingUp { disconnect() }
++                let closed = ContinuousClock().now.advanced(by: .seconds(2))
++                while closing != nil && ContinuousClock().now < closed {
++                    try await waitForShortcutUpdate(until: deadline)
++                }
+                 if !isConnected && !isConnecting {
+                     guard let stored = UserDefaults.standard.string(forKey: Self.savedBandKey),
+                           let identifier = UUID(uuidString: stored),
+@@ -166,12 +183,13 @@
+                 }
+                 try await waitForShortcutUpdate(until: deadline)
+             }
+-            guard isReady && isConnected && lastBuzzResult == 1 else {
++            guard isConnected && lastBuzzResult == 1 else {
+                 throw ShortcutFailure(message: "WHOOP did not confirm the buzz command. Check the research log.")
+             }
+-            note("Shortcuts buzz and stop replies confirmed.")
++            note("Shortcuts buzz confirmed by the band.")
+         } catch {
+-            if isBusy && isConnected { stop() }
++            // Only an unanswered buzz may still be running.
++            if isBusy && isConnected && lastBuzzResult == nil { stop() }
+             note("Shortcuts test failed: \(error.localizedDescription)")
+             throw error
+         }
+@@ -204,11 +222,14 @@
+             guard let self, self.sessionGeneration == generation,
+                   self.pending[sequence] == command else { return }
+             self.pending.removeValue(forKey: sequence)
+-            if command == .hello { self.isReady = false }
++            if command == .hello { self.isReady = false; self.isSettingUp = false }
++            self.isBusy = false
+             // A timeout is not evidence that the band stopped. Keep another
+             // buzz disabled until reconnecting after a failed stop.
+             if command == .stop { self.isReady = false }
+             self.note("No final reply for \(command). Reconnect before another test.")
++            // An unanswered buzz may still be vibrating.
++            if command == .buzz { self.stop() }
+         }
+         writeNext()
+     }
+@@ -251,6 +272,12 @@
+     }
+ 
+     func centralManager(_ central: CBCentralManager, didDisconnectPeripheral device: CBPeripheral, error: Error?) {
++        // The callback for a link this app just closed must not clear a
++        // new session on the same band.
++        if let closed = closing, closed.device == device {
++            closing = nil
++            if Date().timeIntervalSince(closed.at) < 5 { return }
++        }
+         guard device == peripheral else { return }
+         clearSession()
+         note("WHOOP disconnected. Find the band again.")
+@@ -284,6 +311,7 @@
+         if let error {
+             if let writing { pending.removeValue(forKey: writing) }
+             isReady = false
++            isBusy = false
+             note("Bluetooth write failed: \(error.localizedDescription). Reconnect.")
+             writeQueue.removeAll()
+         }
+@@ -302,6 +330,7 @@
+             if result == 2 { note("Band is processing \(command)…"); continue }
+             pending.removeValue(forKey: inner[3])
+             if command == .hello {
++                isSettingUp = false
+                 isReady = result == 1
+                 if isReady { UserDefaults.standard.set(device.identifier.uuidString, forKey: Self.savedBandKey) }
+                 let body = Array(inner.dropFirst(5))
+@@ -313,9 +342,15 @@
+                 lastBuzzResult = result
+                 let detail = inner.count >= 7 ? String(inner[6]) : "unknown"
+                 note("Buzz reply: result \(result), detail \(detail). Check whether you felt it.")
+-                // Keep the button locked until the separate stop completes.
++                // The band's final reply ends this one-shot pattern.
++                isBusy = false
++                if result == 1 { lastConfirmedBuzz = Date() }
+             } else if command == .stop {
+-                if result == 1 { isBusy = false; note("Band confirmed the stop request. You can test again.") }
++                isBusy = false
++                if result == 1 { note("Band confirmed the stop request. You can test again.") }
++                else if lastBuzzResult == 1 { note("Stop refused (result \(result)); the buzz had already finished.") }
++                // Without a confirmed buzz, a refused stop may mean the band
++                // is still vibrating. Keep buzzing disabled until reconnecting.
+                 else { isReady = false; note("Stop was not confirmed (result \(result)). Reconnect.") }
+             }
+         }
+--- codex-snapshot/WhoopBuzzApp.swift	2026-10-09 10:54:09
++++ Sources/WhoopBuzzApp.swift	2026-10-09 10:55:21
+@@ -32,7 +32,7 @@
+                             .disabled(!band.isReady || band.isBusy || band.isRunningShortcut)
+                         Button("Stop vibration") { band.stop() }
+                             .disabled(!band.isConnected)
+-                        Text("A stop request follows the test after two seconds. Keep this app open during the test.")
++                        Text("One short buzz. It ends by itself; Stop vibration is only for a buzz that keeps going.")
+                             .font(.footnote).foregroundStyle(.secondary)
+                     }
+                     Section("Notification bridge") {

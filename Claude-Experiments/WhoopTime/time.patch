@@ -1,0 +1,610 @@
+--- ../WhoopTap/Sources/WhoopFrame.swift	2026-10-09 16:01:39
++++ Sources/WhoopFrame.swift	2026-10-09 17:07:23
+@@ -38,10 +38,17 @@
+ // two more bytes, data…], little endian.
+ struct WhoopEvent {
+     static let doubleTap: UInt16 = 14
++    // Sent when a single tap lights the band's battery indicator. Seen on
++    // 9 Oct beside the owner's taps: BATTERY_LEVEL with event 63, sometimes
++    // with event 110. Whether the band also sends them unprompted is unknown.
++    static let batteryLight: Set<UInt16> = [3, 63, 110]
++    // Reports about past buzzes. They arrive late and in batches.
++    static let hapticReports: Set<UInt16> = [60, 100]
+     private static let names: [UInt16: String] = [
+         3: "BATTERY_LEVEL", 7: "CHARGING_ON", 8: "CHARGING_OFF", 9: "WRIST_ON", 10: "WRIST_OFF",
+         11: "BLE_CONNECTION_UP", 12: "BLE_CONNECTION_DOWN", 14: "DOUBLE_TAP", 29: "STRAP_CONDITION_REPORT",
+         33: "BLE_REALTIME_HR_ON", 34: "BLE_REALTIME_HR_OFF", 60: "HAPTICS_FIRED",
++        63: "EXTENDED_BATTERY_INFORMATION",
+         100: "HAPTICS_TERMINATED", 123: "GENERIC_FIRMWARE_EVENT",
+     ]
+ 
+@@ -57,8 +64,78 @@
+     }
+ 
+     var name: String { Self.names[id] ?? "event \(id)" }
++
++    // Band battery in tenths of a percent, where the event carries it. The
++    // two events agreed on every reading on 9 Oct (477 beside 477, and so on),
++    // and STRAP_CONDITION_REPORT arrives about every ten minutes unprompted.
++    // That the unit is tenths of a percent is an assumption from the values.
++    var batteryTenths: Int? {
++        switch id {
++        case 3 where data.count >= 3: return Int(data[1]) | Int(data[2]) << 8
++        case 29 where data.count >= 8: return Int(data[6]) | Int(data[7]) << 8
++        default: return nil
++        }
++    }
+ }
+ 
++// The time as buzzes, following the Apple Watch "Terse" pattern on a 12-hour
++// clock. For the hour a long pulse is 5 and a short pulse is 1. Then, after a
++// pause, one long pulse for each quarter hour passed. 7:40 is long, short,
++// short, pause, long, long. Two kinds of pulse and never more than four alike
++// in a row, because touch takes in only three or four pulses at a glance.
++enum TimeCode {
++    static let short: [UInt8] = [1, 152]    // a tap
++    static let long: [UInt8] = [47, 152]    // the buzz used for alerts
++
++    // Effect bytes of 128 and above are read as pauses of (value - 128) x 10 ms,
++    // which is what 152 does in the band's own notification pattern. That
++    // reading is an inference from how the patterns feel, not a documented fact.
++    static func pause(milliseconds: Int) -> UInt8 {
++        UInt8(128 + min(max(milliseconds / 10, 1), 123))
++    }
++
++    // How long a command keeps the motor busy, erring on the long side:
++    // pauses are exact and each effect is allowed half a second.
++    // Pulses in a command body's effect bytes: every byte that is an effect
++    // rather than a pause or padding.
++    static func pulseCount(_ effects: [UInt8]) -> Int { effects.filter { $0 > 0 && $0 < 128 }.count }
++
++    static func estimatedSeconds(_ effects: [UInt8]) -> Double {
++        effects.reduce(0) { $0 + ($1 >= 128 ? Double($1 - 128) / 100 : $1 == 0 ? 0 : 0.5) }
++    }
++
++    static func hour(_ hour: Int) -> (long: Int, short: Int) {
++        let twelve = hour % 12 == 0 ? 12 : hour % 12
++        return (twelve / 5, twelve % 5)
++    }
++
++    static func quarters(_ minute: Int) -> Int { minute / 15 }
++
++    // The haptic commands for a time. One command holds eight effect bytes,
++    // which is four pulses. The hour goes in one command when it fits and is
++    // split between its long and short pulses when it does not, which is only
++    // nine o'clock. The pause before the quarters is the first byte of their
++    // command, so the band times it.
++    static func commands(hour: Int, minute: Int) -> [[UInt8]] {
++        let count = self.hour(hour)
++        let longs = Array(repeating: long, count: count.long).flatMap { $0 }
++        let shorts = Array(repeating: short, count: count.short).flatMap { $0 }
++        var commands = longs.count + shorts.count <= 8 ? [longs + shorts] : [longs, shorts]
++        let quarterCount = quarters(minute)
++        if quarterCount > 0 {
++            commands.append([pause(milliseconds: 1200)] + Array(repeating: long, count: quarterCount).flatMap { $0 })
++        }
++        return commands
++    }
++
++    static func describe(hour: Int, minute: Int) -> String {
++        let count = self.hour(hour)
++        let hourWords = Array(repeating: "long", count: count.long) + Array(repeating: "short", count: count.short)
++        let quarterWords = Array(repeating: "long", count: quarters(minute))
++        return hourWords.joined(separator: " ") + ", pause, " + (quarterWords.isEmpty ? "nothing" : quarterWords.joined(separator: " "))
++    }
++}
++
+ // Burst rule for alerts. Messages often arrive several at once; one buzz
+ // covers every alert that lands while it runs or within the quiet time after.
+ enum BuzzGate {
+@@ -92,8 +169,14 @@
+         (0..<count).map { UInt8(truncatingIfNeeded: value >> ($0 * 8)) }
+     }
+ 
+-    static func command(_ command: WhoopCommand, sequence: UInt8) -> Data {
+-        var inner: [UInt8] = [35, sequence, command.rawValue] + command.body
++    // Command 19 body: revision 1, eight effect bytes, effect-loop control
++    // (two bytes) and overall repeats, the last three left at zero.
++    static func hapticBody(_ effects: [UInt8]) -> [UInt8] {
++        [1] + Array((effects + Array(repeating: 0, count: 8)).prefix(8)) + [0, 0, 0]
++    }
++
++    static func command(_ command: WhoopCommand, sequence: UInt8, body: [UInt8]? = nil) -> Data {
++        var inner: [UInt8] = [35, sequence, command.rawValue] + (body ?? command.body)
+         inner += Array(repeating: 0, count: (4 - inner.count % 4) % 4)
+         var header: [UInt8] = [0xaa, 1]
+         header += littleEndian(UInt32(inner.count + 4), count: 2)
+--- ../WhoopTap/Sources/WhoopBluetooth.swift	2026-10-09 16:01:39
++++ Sources/WhoopBluetooth.swift	2026-10-09 23:44:41
+@@ -1,6 +1,7 @@
+ import CoreBluetooth
+ import Combine
+ import Foundation
++import UIKit
+ 
+ @MainActor
+ final class WhoopBluetooth: NSObject, ObservableObject,
+@@ -9,9 +10,14 @@
+     private static let savedBandKey = "whoop.savedPeripheral"
+     private static let logKey = "whoop.researchLog"
+     private static let quietKey = "whoop.quietSeconds"
++    static let quietChoices = [5, 10, 30, 60, 120]
+     private static let tapKey = "whoop.listenForTaps"
++    private static let triggerKey = "whoop.tapTrigger"
++    private static let batteryLogKey = "whoop.batteryLog"
++    private static let pulsesKey = "whoop.stat.pulses"
++    private static let packetsKey = "whoop.stat.dataPackets"
++    private static let cpuKey = "whoop.stat.cpuSeconds"
+     private static let dataID = CBUUID(string: "fd4b0005-cce1-4033-93ce-002d5875f58a")
+-    static let quietChoices = [5, 10, 30, 60, 120]
+     private static let service = CBUUID(string: "fd4b0001-cce1-4033-93ce-002d5875f58a")
+     private static let writeID = CBUUID(string: "fd4b0002-cce1-4033-93ce-002d5875f58a")
+     private static let replyID = CBUUID(string: "fd4b0003-cce1-4033-93ce-002d5875f58a")
+@@ -32,6 +38,12 @@
+             applyTapListening()
+         }
+     }
++    // Which tap starts the action: "either", "double" or "single". The band's
++    // own double-tap detection misses some taps; the single tap that lights
++    // its battery indicator is more dependable.
++    @Published var tapTrigger = UserDefaults.standard.string(forKey: WhoopBluetooth.triggerKey) ?? "either" {
++        didSet { UserDefaults.standard.set(tapTrigger, forKey: Self.triggerKey) }
++    }
+     @Published var quietSeconds: Int = {
+         let saved = UserDefaults.standard.integer(forKey: WhoopBluetooth.quietKey)
+         return saved > 0 ? saved : 10
+@@ -54,12 +66,65 @@
+     private var lastShortcutBuzz: Date?
+     private var dataChannel: CBCharacteristic?
+     private var dataFrames = WhoopReplies()
+-    private var lastTapReply: Date?
++    private var ignoreTapsUntil = Date.distantPast
++    private var ignoredTaps = 0
++    private var ignoreSingleTapsUntil = Date.distantPast
++    private var recentSingleTriggers: [Date] = []
++    private var playingSequence = false
++    private var busyRetries = 0
++    private var userDisconnected = false
++    private var restoredBand: CBPeripheral?
++
++    // Battery study. Each band battery reading is saved with running totals
++    // so drain can be set against buzzing and against this app's own work.
++    @Published private(set) var bandBattery = "no reading yet"
++    private var batteryLog = UserDefaults.standard.stringArray(forKey: batteryLogKey) ?? []
++    private var pulsesBySequence: [UInt8: Int] = [:]
++    private var lastCPU = 0.0
++    private var lastBatterySample: (tenths: Int, at: Date)?
++
++    private static func cpuSeconds() -> Double {
++        var usage = rusage()
++        getrusage(RUSAGE_SELF, &usage)
++        return Double(usage.ru_utime.tv_sec) + Double(usage.ru_utime.tv_usec) / 1e6
++            + Double(usage.ru_stime.tv_sec) + Double(usage.ru_stime.tv_usec) / 1e6
++    }
++
++    private func add(_ amount: Double, to key: String) {
++        UserDefaults.standard.set(UserDefaults.standard.double(forKey: key) + amount, forKey: key)
++    }
++
++    // One line per reading: time, band battery (tenths of a percent), pulses
++    // played, data-channel packets handled, CPU seconds used by this app,
++    // phone battery percent, phone charging, listening for taps.
++    private func recordBattery(_ tenths: Int) {
++        bandBattery = String(format: "%.1f%% at %@", Double(tenths) / 10, Date().formatted(date: .omitted, time: .shortened))
++        if let last = lastBatterySample, last.tenths == tenths, Date().timeIntervalSince(last.at) < 300 { return }
++        lastBatterySample = (tenths, Date())
++        let cpu = Self.cpuSeconds()
++        add(cpu - lastCPU, to: Self.cpuKey)
++        lastCPU = cpu
++        UIDevice.current.isBatteryMonitoringEnabled = true
++        let phone = UIDevice.current.batteryLevel
++        let charging = UIDevice.current.batteryState == .charging || UIDevice.current.batteryState == .full
++        let defaults = UserDefaults.standard
++        batteryLog.append([
++            ISO8601DateFormatter().string(from: Date()), String(tenths),
++            String(Int(defaults.double(forKey: Self.pulsesKey))), String(Int(defaults.double(forKey: Self.packetsKey))),
++            String(format: "%.2f", defaults.double(forKey: Self.cpuKey)),
++            phone < 0 ? "" : String(Int((phone * 100).rounded())), charging ? "1" : "0", listensForTaps ? "1" : "0",
++        ].joined(separator: ","))
++        if batteryLog.count > 1000 { batteryLog.removeFirst(batteryLog.count - 1000) }
++        defaults.set(batteryLog, forKey: Self.batteryLogKey)
++    }
+     private var joinedAlerts = 0
+ 
+     override init() {
+         super.init()
+-        central = CBCentralManager(delegate: self, queue: .main)
++        // The restore identifier lets iOS relaunch the app for band events
++        // after it has ended it in the background.
++        central = CBCentralManager(delegate: self, queue: .main,
++                                   options: [CBCentralManagerOptionRestoreIdentifierKey: "whoop-buzz-central"])
+         note("App process \(ProcessInfo.processInfo.processIdentifier) started.")
+     }
+ 
+@@ -87,26 +152,127 @@
+     }
+ 
+     private func handleBandData(_ data: Data) {
++        add(1, to: Self.packetsKey)
+         for frame in dataFrames.feed(data) {
+             guard let event = WhoopEvent(frame: frame) else { continue }
++            if let tenths = event.batteryTenths { recordBattery(tenths) }
+             let detail = event.data.prefix(8).map { String(format: "%02x", $0) }.joined(separator: " ")
++            if WhoopEvent.hapticReports.contains(event.id) { continue }
++            if event.id == WhoopEvent.doubleTap {
++                handleTap(isDouble: true)
++                continue
++            }
+             logOnly("Band event \(event.name)" + (detail.isEmpty ? "." : " [\(detail)]."))
+-            if event.id == WhoopEvent.doubleTap { replyToTap() }
++            if WhoopEvent.batteryLight.contains(event.id) { handleTap(isDouble: false) }
+         }
+     }
+ 
+-    // First step towards telling the time: one buzz back proves the round trip.
+-    private func replyToTap() {
+-        let recent = lastTapReply.map { Date().timeIntervalSince($0) < 3 } ?? false
+-        guard isReady, !isBusy, !isRunningShortcut, !recent else {
+-            logOnly("Double tap seen; no reply buzz because the band was busy.")
++    // The band reports extra double taps around a buzz (seen 9 Oct: two more
++    // within a second of each reply), most likely its own vibration. Taps are
++    // therefore ignored while anything plays and for three seconds afterwards.
++    private func handleTap(isDouble: Bool) {
++        guard tapTrigger == "either" || tapTrigger == (isDouble ? "double" : "single") else { return }
++        guard isReady, !isBusy, !isRunningShortcut, Date() >= ignoreTapsUntil else {
++            if isDouble { ignoredTaps += 1 }
+             return
+         }
+-        lastTapReply = Date()
+-        logOnly("Double tap seen; buzzing back.")
+-        buzz()
++        if !isDouble {
++            // If the band's own buzzing ever lit the battery indicator, each
++            // playback would start the next. A longer wait after any buzz and
++            // a cap of three a minute stop that from running away.
++            guard Date() >= ignoreSingleTapsUntil else { return }
++            recentSingleTriggers = recentSingleTriggers.filter { Date().timeIntervalSince($0) < 60 }
++            guard recentSingleTriggers.count < 3 else {
++                logOnly("Single-tap trigger paused: three in the last minute.")
++                return
++            }
++            recentSingleTriggers.append(Date())
++        }
++        if ignoredTaps > 0 {
++            logOnly("\(ignoredTaps) double-tap event\(ignoredTaps == 1 ? "" : "s") ignored around the last buzz.")
++            ignoredTaps = 0
++        }
++        logOnly((isDouble ? "Double tap" : "Single tap (battery light)") + ": playing the time.")
++        playTime()
+     }
+ 
++    private enum Started { case yes, motorBusy, no }
++
++    // Sends one haptic command and waits for the band's final reply.
++    private func sendEffects(_ effects: [UInt8]) async -> Started {
++        guard isReady, isConnected else { return .no }
++        lastBuzzReply = nil
++        enqueue(.buzz, body: WhoopFrame.hapticBody(effects))
++        let deadline = ContinuousClock().now.advanced(by: .seconds(6))
++        while lastBuzzReply == nil, isReady, isConnected, ContinuousClock().now < deadline {
++            try? await Task.sleep(for: .milliseconds(30))
++        }
++        guard let reply = lastBuzzReply else { return .no }
++        if reply.oneShotSucceeded { return .yes }
++        return reply.result == 0 && reply.detail == 7 ? .motorBusy : .no
++    }
++
++    // The band's success reply means "started", not "finished": on 9 Oct every
++    // lab pulse was confirmed within 0.6 s, and a second command sent while
++    // the first pattern was still running came back about a second later as
++    // result 0, detail 7. The band waits roughly that long for the motor, so
++    // resending until it starts makes one pattern follow the other.
++    private func playEffects(_ effects: [UInt8]) async -> Bool {
++        for _ in 0..<8 {
++            switch await sendEffects(effects) {
++            case .yes: return true
++            case .motorBusy: busyRetries += 1
++            case .no: return false
++            }
++        }
++        return false
++    }
++
++    // Holds the app busy until the last pattern has had time to finish, then
++    // keeps ignoring taps for three more seconds.
++    private func finishPlayback(lastCommand: [UInt8]) async {
++        try? await Task.sleep(for: .milliseconds(Int(TimeCode.estimatedSeconds(lastCommand) * 1000)))
++        playingSequence = false
++        isBusy = false
++        ignoreTapsUntil = Date().addingTimeInterval(3)
++        ignoreSingleTapsUntil = Date().addingTimeInterval(10)
++    }
++
++    // Plays the time now, or a chosen time for practice.
++    func playTime(_ chosen: Date = Date()) {
++        guard isReady, !isBusy, !isRunningShortcut else { return }
++        let now = Calendar.current.dateComponents([.hour, .minute], from: chosen)
++        let hour = now.hour ?? 0, minute = now.minute ?? 0
++        let commands = TimeCode.commands(hour: hour, minute: minute)
++        isBusy = true
++        playingSequence = true
++        busyRetries = 0
++        buzzGeneration = UUID()
++        let started = Date()
++        logOnly(String(format: "Time %d:%02d as %@.", hour, minute, TimeCode.describe(hour: hour, minute: minute)))
++        Task { [weak self] in
++            guard let self else { return }
++            var sent = 0
++            for effects in commands {
++                var ok = await self.playEffects(effects)
++                // If the band refuses a command that begins with a pause,
++                // wait here instead and send the pulses without it.
++                if !ok, let first = effects.first, first >= 128, self.lastBuzzReply?.detail != 7 {
++                    try? await Task.sleep(for: .milliseconds(1200))
++                    ok = await self.playEffects(Array(effects.dropFirst()))
++                }
++                guard ok else { break }
++                sent += 1
++            }
++            await self.finishPlayback(lastCommand: sent > 0 ? commands[sent - 1] : [])
++            let reply = self.lastBuzzReply
++            self.logOnly(sent == commands.count
++                ? String(format: "Time played: %d commands started over %.1f s, %d resent while the motor was busy.",
++                         sent, Date().timeIntervalSince(started), self.busyRetries)
++                : "Time playback stopped at command \(sent + 1) of \(commands.count): result \(reply.map { String($0.result) } ?? "none"), detail \(reply?.detail.map { String($0) } ?? "none").")
++        }
++    }
++
+     func scan() {
+         guard central.state == .poweredOn else { note("Turn on Bluetooth and allow access in Settings."); return }
+         guard !isConnected && !isConnecting else { return }
+@@ -124,6 +290,7 @@
+ 
+     func connect(_ device: CBPeripheral) {
+         guard !isConnected && !isConnecting else { return }
++        userDisconnected = false
+         central.stopScan()
+         scanGeneration = UUID()
+         sessionGeneration = UUID()
+@@ -135,18 +302,47 @@
+         let generation = sessionGeneration
+         DispatchQueue.main.asyncAfter(deadline: .now() + 15) { [weak self] in
+             guard let self, self.sessionGeneration == generation, !self.isReady else { return }
+-            self.disconnect()
+-            self.note("Connection setup timed out. Open WHOOP, check that the band is connected, then retry.")
++            self.retryConnection("Connection setup timed out. Waiting for the band.")
+         }
+     }
+ 
++    // The Disconnect button. The app stays disconnected until the owner
++    // connects again or an alert arrives.
+     func disconnect() {
++        userDisconnected = true
+         central.stopScan()
+         if let peripheral { central.cancelPeripheralConnection(peripheral) }
+         clearSession()
+         note("Disconnected.")
+     }
+ 
++    // Keeps a standing request to the saved band. Core Bluetooth holds it with
++    // no time limit, also while the app is suspended, and completes it when
++    // the band is back in range or Bluetooth is back on. Before this, a lost
++    // connection stayed lost until the next alert or a manual reconnect, and
++    // taps on the band did nothing in between.
++    private func reconnectWhenAvailable() {
++        guard central.state == .poweredOn, !userDisconnected, !isConnected, !isConnecting else { return }
++        let saved = UserDefaults.standard.string(forKey: Self.savedBandKey).flatMap { UUID(uuidString: $0) }
++        guard let device = restoredBand ?? saved.flatMap({ central.retrievePeripherals(withIdentifiers: [$0]).first })
++        else { return }
++        restoredBand = nil
++        sessionGeneration = UUID()
++        peripheral = device
++        device.delegate = self
++        isConnecting = true
++        note("Waiting for your WHOOP.")
++        if device.state == .connected { centralManager(central, didConnect: device) } else { central.connect(device) }
++    }
++
++    // Drops a connection that is not working and waits for the band again.
++    private func retryConnection(_ message: String) {
++        if let peripheral { central.cancelPeripheralConnection(peripheral) }
++        clearSession()
++        note(message)
++        DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak self] in self?.reconnectWhenAvailable() }
++    }
++
+     private func clearSession() {
+         scanGeneration = UUID()
+         buzzGeneration = UUID()
+@@ -156,6 +352,7 @@
+         replies = WhoopReplies()
+         dataChannel = nil
+         dataFrames = WhoopReplies()
++        playingSequence = false
+         pending.removeAll()
+         writeQueue.removeAll()
+         writing = nil
+@@ -220,23 +417,24 @@
+             while central.state == .unknown || central.state == .resetting {
+                 try await waitForShortcutUpdate(until: deadline)
+             }
++            // With Bluetooth off or the band out of reach there is nothing to
++            // buzz. The alert is skipped quietly instead of failing, so the
++            // phone does not show an automation error for every message.
+             guard central.state == .poweredOn else {
+-                throw ShortcutFailure(message: "Bluetooth is \(bluetoothStateName). Turn it on and allow WHOOP Buzz to use it.")
++                note("Alert not buzzed: Bluetooth is \(bluetoothStateName).")
++                return
+             }
+             if !isReady {
+-                if !isConnected && !isConnecting {
+-                    guard let stored = UserDefaults.standard.string(forKey: Self.savedBandKey),
+-                          let identifier = UUID(uuidString: stored),
+-                          let device = central.retrievePeripherals(withIdentifiers: [identifier]).first else {
+-                        throw ShortcutFailure(message: "Open WHOOP Buzz and connect your band once before using this action.")
+-                    }
+-                    connect(device)
++                userDisconnected = false
++                reconnectWhenAvailable()
++                // A band in range finishes setup within a second or two.
++                let patience = ContinuousClock().now.advanced(by: .seconds(8))
++                while !isReady, ContinuousClock().now < patience {
++                    try await Task.sleep(for: .milliseconds(100))
+                 }
+-                while !isReady {
+-                    guard isConnected || isConnecting else {
+-                        throw ShortcutFailure(message: "WHOOP could not connect. Keep the band nearby and reconnect in WHOOP Buzz.")
+-                    }
+-                    try await waitForShortcutUpdate(until: deadline)
++                guard isReady else {
++                    note("Alert not buzzed: the band is not connected. Still waiting for it.")
++                    return
+                 }
+             }
+             try Task.checkCancellation()
+@@ -294,15 +492,18 @@
+         }
+     }
+ 
+-    private func enqueue(_ command: WhoopCommand, sequence supplied: UInt8? = nil) {
++    private func enqueue(_ command: WhoopCommand, sequence supplied: UInt8? = nil, body: [UInt8]? = nil) {
+         guard let peripheral, let writer else { isBusy = false; return }
+         let sequence = supplied ?? nextSequence
+         guard pending[sequence] == nil else { note("A command is still pending. Wait for its response."); return }
+         if supplied == nil { nextSequence &+= 1; if nextSequence < 2 { nextSequence = 2 } }
+-        let frame = WhoopFrame.command(command, sequence: sequence)
++        let frame = WhoopFrame.command(command, sequence: sequence, body: body)
+         guard frame.count <= peripheral.maximumWriteValueLength(for: .withResponse), writer.properties.contains(.write)
+         else { note("This connection cannot send the test command."); isBusy = false; return }
+         pending[sequence] = command
++        if command == .buzz {
++            pulsesBySequence[sequence] = TimeCode.pulseCount(Array((body ?? command.body).dropFirst().prefix(8)))
++        }
+         writeQueue.append((sequence, frame))
+         let generation = sessionGeneration
+         DispatchQueue.main.asyncAfter(deadline: .now() + 10) { [weak self] in
+@@ -330,8 +531,10 @@
+     }
+ 
+     func centralManagerDidUpdateState(_ central: CBCentralManager) {
+-        if central.state == .poweredOn { note("Bluetooth is ready. Tap Find my WHOOP.") }
+-        else {
++        if central.state == .poweredOn {
++            note("Bluetooth is ready.")
++            reconnectWhenAvailable()
++        } else {
+             clearSession()
+             note(central.state == .unauthorized ? "Bluetooth is not authorised. Allow this app in Settings → Privacy & Security → Bluetooth." : "Bluetooth is \(bluetoothStateName).")
+         }
+@@ -351,18 +554,29 @@
+         isConnected = true
+         note("Connected. Preparing the vibration test…")
+         device.discoverServices([Self.service])
++        let generation = sessionGeneration
++        DispatchQueue.main.asyncAfter(deadline: .now() + 15) { [weak self] in
++            guard let self, self.sessionGeneration == generation, !self.isReady else { return }
++            self.retryConnection("Band setup did not finish. Waiting for the band.")
++        }
+     }
+ 
++    // iOS hands back the band the app was connected to, or waiting for, when
++    // it relaunches the app in the background.
++    func centralManager(_ central: CBCentralManager, willRestoreState dict: [String: Any]) {
++        restoredBand = (dict[CBCentralManagerRestoredStatePeripheralsKey] as? [CBPeripheral])?.first
++    }
++
+     func centralManager(_ central: CBCentralManager, didFailToConnect device: CBPeripheral, error: Error?) {
+         guard device == peripheral else { return }
+-        clearSession()
+-        note("Could not connect: \(error?.localizedDescription ?? "try again").")
++        retryConnection("Could not connect: \(error?.localizedDescription ?? "unknown reason"). Waiting for the band.")
+     }
+ 
+     func centralManager(_ central: CBCentralManager, didDisconnectPeripheral device: CBPeripheral, error: Error?) {
+         guard device == peripheral else { return }
+         clearSession()
+-        note("WHOOP disconnected. Find the band again.")
++        note("WHOOP disconnected.")
++        reconnectWhenAvailable()
+     }
+ 
+     func peripheral(_ device: CBPeripheral, didDiscoverServices error: Error?) {
+@@ -420,7 +634,10 @@
+             guard inner.count >= 5, inner[0] == 36 || inner[0] == 38,
+                   let command = pending[inner[3]], command.rawValue == inner[2] else { continue }
+             let result = inner[4]
+-            if result == 2 { note("Band is processing \(command)…"); continue }
++            if result == 2 {
++                if !(playingSequence && command == .buzz) { note("Band is processing \(command)…") }
++                continue
++            }
+             pending.removeValue(forKey: inner[3])
+             if command == .hello {
+                 isReady = result == 1
+@@ -433,9 +650,17 @@
+                 } else { note(isReady ? "WHOOP is ready. Tap Test one buzz." : "Band refused session setup (result \(result)).") }
+             } else if command == .buzz {
+                 lastBuzzReply = WhoopHapticReply(result: result, body: Array(inner.dropFirst(5)))
++                // Count pulses only for commands the band started.
++                if lastBuzzReply?.oneShotSucceeded == true { add(Double(pulsesBySequence[inner[3]] ?? 0), to: Self.pulsesKey) }
++                pulsesBySequence.removeValue(forKey: inner[3])
+                 let revision = lastBuzzReply?.revision.map { String($0) } ?? "unknown"
+                 let detail = lastBuzzReply?.detail.map { String($0) } ?? "unknown"
+-                note("Buzz reply: result \(result), revision \(revision), detail \(detail). Check whether you felt it.")
++                // A time playback logs one summary line instead of every reply.
++                if !playingSequence {
++                    note("Buzz reply: result \(result), revision \(revision), detail \(detail). Check whether you felt it.")
++                }
++                ignoreTapsUntil = Date().addingTimeInterval(3)
++                ignoreSingleTapsUntil = Date().addingTimeInterval(10)
+                 // Keep the button locked for the short pattern's cooldown.
+             } else if command == .stop {
+                 if result == 1 { isBusy = false; note("Band confirmed the stop request. You can test again.") }
+--- ../WhoopTap/Sources/WhoopBuzzApp.swift	2026-10-09 16:01:39
++++ Sources/WhoopBuzzApp.swift	2026-10-09 23:44:41
+@@ -3,9 +3,13 @@
+ @main
+ struct WhoopBuzzApp: App {
+     @StateObject private var band = WhoopBluetooth.shared
++    @State private var practiceTime = Date()
+ 
+     init() {
+         if #available(iOS 27.0, *) { WhoopBuzzShortcuts.updateAppShortcutParameters() }
++        // Start Bluetooth on every launch, including background relaunches
++        // where no screen is drawn, so the band reconnects by itself.
++        _ = WhoopBluetooth.shared
+     }
+ 
+     var body: some Scene {
+@@ -46,11 +50,28 @@
+                         Text("When several alerts arrive together, the band buzzes once. Alerts within this time of a buzz do not buzz again.")
+                             .font(.footnote).foregroundStyle(.secondary)
+                     }
+-                    Section("Tap on the band (experiment)") {
+-                        Toggle("Listen for double taps", isOn: $band.listensForTaps)
+-                        Text("When on, a double tap on the band should buzz back once, and every event the band reports is logged below. Listening wakes this app more often, so it uses more battery.")
++                    Section("Tap the band for the time") {
++                        Toggle("Listen for taps", isOn: $band.listensForTaps)
++                        Picker("Trigger", selection: $band.tapTrigger) {
++                            Text("Single or double tap").tag("either")
++                            Text("Double tap only").tag("double")
++                            Text("Single tap only").tag("single")
++                        }
++                        Button("Play the time now") { band.playTime() }
++                            .disabled(!band.isReady || band.isBusy || band.isRunningShortcut)
++                        DatePicker("Practise a time", selection: $practiceTime, displayedComponents: .hourAndMinute)
++                        Button("Play the practice time") { band.playTime(practiceTime) }
++                            .disabled(!band.isReady || band.isBusy || band.isRunningShortcut)
++                        Text("The hour first: a buzz is 5, a tap is 1. Then a pause, then one buzz for each quarter hour passed. 7:40 is buzz, tap, tap, pause, buzz, buzz. Nothing after the pause means less than a quarter past.")
+                             .font(.footnote).foregroundStyle(.secondary)
++                        Text("A single tap is the one that lights the band's battery indicator. It is picked up more reliably than a double tap, but a knock can set it off. Listening wakes this app more often, so it uses more battery.")
++                            .font(.footnote).foregroundStyle(.secondary)
+                     }
++                    Section("Battery study") {
++                        Text("Band battery: \(band.bandBattery)")
++                        Text("While listening is on, the app saves a band battery reading about every ten minutes, with how much it has buzzed. Run the report on the Mac to see the drain.")
++                            .font(.footnote).foregroundStyle(.secondary)
++                    }
+                     Section("Research log") {
+                         ForEach(Array(band.log.enumerated()), id: \.offset) { _, line in
+                             Text(line).font(.caption).textSelection(.enabled)

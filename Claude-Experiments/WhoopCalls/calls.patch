@@ -1,0 +1,105 @@
+--- main-snapshot/WhoopBluetooth.swift	2026-10-09 12:16:19
++++ Sources/WhoopBluetooth.swift	2026-10-09 12:17:10
+@@ -43,10 +43,17 @@
+     private func note(_ text: String) {
+         status = text
+         log.insert(Date().formatted(date: .omitted, time: .standard) + "  " + text, at: 0)
+-        if log.count > 40 { log.removeLast(log.count - 40) }
++        if log.count > 120 { log.removeLast(log.count - 120) }
+         UserDefaults.standard.set(log, forKey: Self.logKey)
+     }
+ 
++    // Log line from another part of the app, leaving the status text alone.
++    func record(_ text: String) {
++        let current = status
++        note(text)
++        status = current
++    }
++
+     func scan() {
+         guard central.state == .poweredOn else { note("Turn on Bluetooth and allow access in Settings."); return }
+         guard !isConnected && !isConnecting else { return }
+@@ -137,14 +144,20 @@
+     // App Intents uses the same manager as the UI. A saved peripheral avoids
+     // background scanning; the intent awaits replies instead of returning
+     // immediately after scheduling a Bluetooth write.
+-    func buzzFromShortcut() async throws {
++    func buzzFromShortcut() async throws { try await requestBuzz(source: "Shortcuts") }
++
++    // One buzz for Shortcuts or the call watcher.
++    func requestBuzz(source: String) async throws {
++        // Alerts arrive in bursts. A request that lands during a buzz is
++        // covered by that buzz, so it returns quietly instead of failing.
+         guard !isRunningShortcut && !isBusy else {
+-            throw ShortcutFailure(message: "WHOOP is already running a vibration test.")
++            note("\(source) request joined the current buzz.")
++            return
+         }
+         isRunningShortcut = true
+         defer { isRunningShortcut = false }
+         let deadline = ContinuousClock().now.advanced(by: .seconds(20))
+-        note("Shortcuts requested one buzz.")
++        note("\(source) requested one buzz.")
+         do {
+             while central.state == .unknown || central.state == .resetting {
+                 try await waitForShortcutUpdate(until: deadline)
+@@ -185,12 +198,12 @@
+             guard lastBuzzReply?.oneShotSucceeded == true else {
+                 throw ShortcutFailure(message: "WHOOP did not confirm the buzz command. Check the research log.")
+             }
+-            note("Shortcuts one-buzz reply confirmed.")
++            note("\(source) one-buzz reply confirmed.")
+         } catch {
+             // A rejected stop disables readiness. Do not automatically repeat
+             // that failed command while reporting the Shortcut error.
+             if isBusy && isConnected && isReady { stop() }
+-            note("Shortcuts test failed: \(error.localizedDescription)")
++            note("\(source) test failed: \(error.localizedDescription)")
+             throw error
+         }
+     }
+--- main-snapshot/WhoopBuzzApp.swift	2026-10-09 12:16:19
++++ Sources/WhoopBuzzApp.swift	2026-10-09 12:17:10
+@@ -3,9 +3,12 @@
+ @main
+ struct WhoopBuzzApp: App {
+     @StateObject private var band = WhoopBluetooth.shared
++    @StateObject private var calls = CallBuzz.shared
+ 
+     init() {
+         if #available(iOS 27.0, *) { WhoopBuzzShortcuts.updateAppShortcutParameters() }
++        // Start watching calls on every launch, including background ones.
++        _ = CallBuzz.shared
+     }
+ 
+     var body: some Scene {
+@@ -35,6 +38,14 @@
+                         Text("The band plays one short pattern. Stop vibration can end a test early.")
+                             .font(.footnote).foregroundStyle(.secondary)
+                     }
++                    Section("Calls") {
++                        Toggle("Buzz for incoming calls", isOn: Binding(
++                            get: { calls.isEnabled }, set: { calls.setEnabled($0) }))
++                        Text("Keep-alive: \(calls.keepAliveStatus)")
++                            .font(.footnote).foregroundStyle(.secondary)
++                        Text("Buzzes while any call rings, WhatsApp or normal. Location access only keeps the app running; no location is read or stored.")
++                            .font(.footnote).foregroundStyle(.secondary)
++                    }
+                     Section("Notification bridge") {
+                         Text("Connect your band here once. In Shortcuts, use the Buzz WHOOP action for your automation. Notification-trigger and locked-phone operation still need testing.")
+                             .font(.footnote)
+--- main-snapshot/Info.plist	2026-10-09 12:16:19
++++ Info.plist	2026-10-09 12:17:10
+@@ -25,7 +25,12 @@
+ 	<key>UIBackgroundModes</key>
+ 	<array>
+ 		<string>bluetooth-central</string>
++		<string>location</string>
+ 	</array>
++	<key>NSLocationWhenInUseUsageDescription</key>
++	<string>Keeps WHOOP Buzz running so it can buzz your band when a call rings. Your location is not read or stored.</string>
++	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
++	<string>Keeps WHOOP Buzz running in the background so it can buzz your band when a call rings. Your location is not read or stored.</string>
+ 	<key>UIApplicationSceneManifest</key>
+ 	<dict>
+ 		<key>UIApplicationSupportsMultipleScenes</key>

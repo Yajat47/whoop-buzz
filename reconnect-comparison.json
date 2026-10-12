@@ -1,0 +1,112 @@
+{
+  "baseline": {
+    "sha256": "5653dd2b41b5b24de358196104fba410c2599ef966c0b4a2de4cbe3ba48fd671",
+    "records": 1922,
+    "message_counts": {
+      "COMMAND": 14,
+      "COMMAND_RESPONSE": 16,
+      "METADATA": 18,
+      "CONSOLE_LOGS": 134,
+      "HISTORICAL_DATA": 339,
+      "REALTIME_DATA": 42,
+      "EVENT": 4
+    }
+  },
+  "reconnect": {
+    "sha256": "280b6da17140e8656c176cab0b06fcbdeb6d0a6b96f24a864cfe8e7582e1c736",
+    "records": 3674,
+    "message_counts": {
+      "COMMAND": 144,
+      "COMMAND_RESPONSE": 150,
+      "METADATA": 22,
+      "EVENT": 5,
+      "CONSOLE_LOGS": 206,
+      "HISTORICAL_DATA": 441
+    }
+  },
+  "post_reconnect_timeline": [
+    {
+      "stage": "Bluetooth connection complete",
+      "capture_time_utc": "2026-10-08T22:55:39.366000+00:00",
+      "seconds_after_connection": 0.0
+    },
+    {
+      "stage": "Encryption enabled",
+      "capture_time_utc": "2026-10-08T22:55:39.639000+00:00",
+      "seconds_after_connection": 0.273
+    },
+    {
+      "stage": "247-byte MTU exchange complete",
+      "capture_time_utc": "2026-10-08T22:55:39.731000+00:00",
+      "seconds_after_connection": 0.365
+    },
+    {
+      "stage": "Five vendor characteristics discovered",
+      "capture_time_utc": "2026-10-08T22:55:40.241000+00:00",
+      "seconds_after_connection": 0.875
+    },
+    {
+      "stage": "First identity/hello request",
+      "capture_time_utc": "2026-10-08T22:55:40.868000+00:00",
+      "seconds_after_connection": 1.502
+    },
+    {
+      "stage": "Stored-record range requested",
+      "capture_time_utc": "2026-10-08T22:55:41.381000+00:00",
+      "seconds_after_connection": 2.015
+    },
+    {
+      "stage": "Historical transfer requested",
+      "capture_time_utc": "2026-10-08T22:55:42.732000+00:00",
+      "seconds_after_connection": 3.366
+    },
+    {
+      "stage": "First stored record received",
+      "capture_time_utc": "2026-10-08T22:55:42.924000+00:00",
+      "seconds_after_connection": 3.558
+    },
+    {
+      "stage": "Last stored record received",
+      "capture_time_utc": "2026-10-08T22:55:44.426000+00:00",
+      "seconds_after_connection": 5.06
+    }
+  ],
+  "historical_transfer": {
+    "total": 441,
+    "before_reconnect": 299,
+    "after_reconnect": 142,
+    "unique_counters": 441,
+    "first_counter": 101565,
+    "last_counter": 102005,
+    "adjacent_counter_steps": {
+      "1": 440
+    }
+  },
+  "observed_setting_names": {
+    "enable_r22_packets": 3,
+    "enable_r22_v2_packets": 3,
+    "enable_r22_v3_packets": 3,
+    "enable_r22_v4_packets": 3,
+    "enable_r22_v5_packets": 3,
+    "enable_r22_v6_packets": 3,
+    "enable_r22_v8_packets": 3,
+    "enable_r22_v9_packets": 3,
+    "make_hrfm_visible": 3,
+    "disable_pip_r26_packets": 3,
+    "wear_detect_bias": 3,
+    "hr_ch_switching": 3,
+    "ir_hw_switching": 3,
+    "enable_passive_strap_fit_gen5": 3,
+    "dorset_inhibit_wpt": 3,
+    "enable_frizzle_burst_mode": 3,
+    "ir_1x_enable": 3,
+    "enable_rocky_again": 3,
+    "project_drawbridge": 3,
+    "wear_detect_fast_event": 3
+  },
+  "limits": [
+    "The WHOOP-specific disconnect event is not present; the unrelated disconnect was excluded.",
+    "Absolute device and capture clock alignment remains unverified.",
+    "No type-40 live data or command-3 enable request occurred in this capture."
+  ]
+}

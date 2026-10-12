@@ -1,0 +1,63 @@
+import SwiftUI
+
+@main
+struct WhoopBuzzApp: App {
+    @StateObject private var band = WhoopBluetooth.shared
+    @StateObject private var calls = CallBuzz.shared
+
+    init() {
+        if #available(iOS 27.0, *) { WhoopBuzzShortcuts.updateAppShortcutParameters() }
+        // Start watching calls on every launch, including background ones.
+        _ = CallBuzz.shared
+    }
+
+    var body: some Scene {
+        WindowGroup {
+            NavigationStack {
+                Form {
+                    Section("Connect your band") {
+                        Text(band.status)
+                        Button("Find my WHOOP") { band.scan() }
+                            .disabled(band.isConnected || band.isConnecting || band.isRunningShortcut)
+                        ForEach(band.devices, id: \.identifier) { device in
+                            HStack {
+                                Text(device.name ?? "WHOOP 5")
+                                Spacer()
+                                Button("Connect") { band.connect(device) }
+                                    .disabled(band.isConnected || band.isConnecting || band.isRunningShortcut)
+                            }
+                        }
+                        Button("Disconnect") { band.disconnect() }
+                            .disabled(!band.isConnected && !band.isConnecting)
+                    }
+                    Section("Vibration test") {
+                        Button("Test one buzz") { band.buzz() }
+                            .disabled(!band.isReady || band.isBusy || band.isRunningShortcut)
+                        Button("Stop vibration") { band.stop() }
+                            .disabled(!band.isConnected || !band.isBusy)
+                        Text("The band plays one short pattern. Stop vibration can end a test early.")
+                            .font(.footnote).foregroundStyle(.secondary)
+                    }
+                    Section("Calls") {
+                        Toggle("Buzz for incoming calls", isOn: Binding(
+                            get: { calls.isEnabled }, set: { calls.setEnabled($0) }))
+                        Text("Keep-alive: \(calls.keepAliveStatus)")
+                            .font(.footnote).foregroundStyle(.secondary)
+                        Text("Buzzes while any call rings, WhatsApp or normal. Location access only keeps the app running; no location is read or stored.")
+                            .font(.footnote).foregroundStyle(.secondary)
+                    }
+                    Section("Notification bridge") {
+                        Text("Connect your band here once. In Shortcuts, use the Buzz WHOOP action for your automation. Notification-trigger and locked-phone operation still need testing.")
+                            .font(.footnote)
+                    }
+                    Section("Research log") {
+                        ForEach(Array(band.log.enumerated()), id: \.offset) { _, line in
+                            Text(line).font(.caption).textSelection(.enabled)
+                        }
+                    }
+                }
+                .navigationTitle("WHOOP Buzz")
+            }
+        }
+    }
+}

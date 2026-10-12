@@ -1,0 +1,39 @@
+{
+  "repository": "b-nnett/goose",
+  "commit": "ba9ae0280c9b5b9a1545baab8e944cb3b7563c62",
+  "files": [
+    {
+      "url": "https://raw.githubusercontent.com/b-nnett/goose/ba9ae0280c9b5b9a1545baab8e944cb3b7563c62/Rust/core/src/protocol.rs",
+      "file": "protocol.rs",
+      "sha256": "05e73b2ac284f3fae5c2818140095001235b3846a3cf02c0a26babd45a623708"
+    },
+    {
+      "url": "https://raw.githubusercontent.com/b-nnett/goose/ba9ae0280c9b5b9a1545baab8e944cb3b7563c62/Rust/core/src/commands.rs",
+      "file": "commands.rs",
+      "sha256": "5029dac62afba4bd00e8eff967f6a622b669f1a7d4829462f50253eb20379e37"
+    },
+    {
+      "url": "https://raw.githubusercontent.com/b-nnett/goose/ba9ae0280c9b5b9a1545baab8e944cb3b7563c62/GooseSwift/GooseBLEClient+HistoricalCommands.swift",
+      "file": "GooseBLEClient+HistoricalCommands.swift",
+      "sha256": "a3bf8f7a7e8e5e26d9e63e8694eebde6d36d77eb04784f697489b089e5fc0658"
+    }
+  ],
+  "additional_sources": [
+    {
+      "repository": "ryanbr/noop",
+      "commit": "8e94d559be273ec8d74832fe5db78898be83cc11",
+      "url": "https://raw.githubusercontent.com/ryanbr/noop/8e94d559be273ec8d74832fe5db78898be83cc11/docs/PROTOCOL_SENSORS.md",
+      "file": "noop-PROTOCOL_SENSORS.md",
+      "sha256": "d762001c59dbbfa4d29984b40c6e4954c49007c3ae66bd5e849d9b47200bc17c",
+      "use": "Candidate live-HR offsets only; firmware applicability needs local validation."
+    },
+    {
+      "repository": "ryanbr/noop",
+      "commit": "8e94d559be273ec8d74832fe5db78898be83cc11",
+      "url": "https://raw.githubusercontent.com/ryanbr/noop/8e94d559be273ec8d74832fe5db78898be83cc11/docs/PROTOCOL_ALARMS.md",
+      "file": "noop-PROTOCOL_ALARMS.md",
+      "sha256": "75d9ae4884771696605ae973d5fea49b9bf56beb913980733162b80ee39573cc",
+      "use": "WHOOP 5 command-19 single buzz and command-122 stop; physical behavior on this band untested."
+    }
+  ]
+}
